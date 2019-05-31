@@ -1,28 +1,39 @@
-# In[]
+#%%
 
-from functools import reduce
 import math
-import matplotlib.pyplot as plt
-import matplotlib.ticker as ticker
-import numpy as np
 import os
 import os.path
 import pprint
 import random
 import string
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-import torch.optim as optim
 import tarfile
 import time
 import unicodedata
 import urllib.request
 import zipfile
+from functools import reduce
+
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import torch.optim as optim
+from tensorboardX import SummaryWriter
 
 import typer.etl.downloader as downloader
 
-# In[]
+#%%
+
+writer = SummaryWriter()
+
+#%%: Set seeds
+SEED = 82
+torch.manual_seed(SEED)
+np.random.seed(SEED)
+torch.backends.cudnn.deterministic = True
+torch.backends.cudnn.benchmark = False
+
+#%%
 
 def prepare_dataset():
     all_dataset_path = []
@@ -136,7 +147,7 @@ print(textToTensor("ab"))
 print(textToIndexTensor("ab"))
 
 
-# In[]
+#%%
 def next_inputs(bundled_dataset):
     """Fetch next input text
 
@@ -160,7 +171,11 @@ def next_inputs(bundled_dataset):
     total_length = 0
 
     for i in range(max_lines_to_check):
-        line = files[file_idx]["handle"].readline()
+        try:
+            line = files[file_idx]["handle"].readline()
+        except:
+            print("! {}".format(files[file_idx]["handle"].tell()))
+            continue
         if not line:
             files[file_idx]["handle"].close()
             files[file_idx]["handle"] = None
@@ -231,35 +246,37 @@ class MyNet(nn.Module):
         self.hidden_size = hidden_size
 
         self.lstm1 = LSTM(n_letters, hidden_size)
-        self.dropout = nn.Dropout()
+        self.dropout1 = nn.Dropout(p=0.2)
         self.lstm2 = LSTM(hidden_size, n_letters)
+        self.dropout2 = nn.Dropout(p=0.2)
         self.softmax = nn.LogSoftmax(dim=1)
 
     def forward(self, input, output_in, hidden_in, context_in):
         context1_out, hidden_out = self.lstm1(
             input, hidden_in, context_in[0][: self.hidden_size]
         )
-        hidden_out = self.dropout(hidden_out)
+        hidden_out = self.dropout1(hidden_out)
         context2_out, output = self.lstm2(
             hidden_out, output_in, context_in[0][self.hidden_size :]
         )
-        output_out = self.softmax(output)
+        output_ = self.dropout2(output)
+        output_out = self.softmax(output_)
         return output_out, hidden_out, torch.cat((context1_out, context2_out), 1)
 
 
-hidden_size = 25
+hidden_size = 512
 my_net = MyNet(n_letters, n_letters, hidden_size)
 
 
-# In[10]:
+#%%
 
 
 learning_rate = (
     0.005
 )  # If you set this too high, it might explode. If too low, it might not learn
-n_iters = 500
-print_every = 50
-plot_every = 50
+n_iters = 200000
+print_every = 1000
+plot_every = 200
 current_loss = 0
 all_losses = []
 
@@ -302,7 +319,7 @@ def train(text):
     return outputs, loss.item()
 
 
-# In[12]:
+#%%:
 
 
 def sample(context=torch.zeros(1, hidden_size + n_letters)):
@@ -342,7 +359,7 @@ start = time.time()
 
 
 current_loss = 0
-for iter in range(1, n_iters + 1):
+for i in range(1, n_iters + 1):
     text = next_inputs(all_dataset)
     if not text:
         continue
@@ -350,27 +367,29 @@ for iter in range(1, n_iters + 1):
     current_loss += loss
 
     # Print iter number, loss, name and guess
-    if iter % print_every == 0:
+    if i % print_every == 0:
         print(
-            "[%d] %d%% (%s) %.4f" % (iter, iter / n_iters * 100, timeSince(start), loss)
+            "[%d] %d%% (%s) %.4f" % (i, i / n_iters * 100, timeSince(start), loss)
         )
         print("- TO BE: %s" % text)
         print("- AS IS: %s" % outputs)
-        print("- Sample: %s" % sample()[0])
+        sampled_text = sample()[0]
+        print("- SAMPLE: %s" % sampled_text)
+        print("- LOSS: %s" % current_loss)
+        writer.add_text('data/ground_truth', str(text), i)
+        writer.add_text('data/outputs', outputs, i)
+        writer.add_text('data/sample', sampled_text, i)
 
     # Add current loss avg to list of losses
-    if iter % plot_every == 0:
-        all_losses.append(current_loss / plot_every)
-        print(current_loss)
+    if i % plot_every == 0:
+        average_loss = current_loss / plot_every
+        all_losses.append(average_loss)
+        writer.add_scalar('data/loss', average_loss, i)
         current_loss = 0
 
-print(all_losses)
 close_dataset_files(all_dataset)
 
-
-# 3. Demo
-
-#%%
+#%%: Sampling
 
 
 context = torch.zeros(1, hidden_size + n_letters)
@@ -378,7 +397,24 @@ for i in range(10):
     output_text, context = sample(context=context)
     print(output_text)
 
+#%%: Save result as a file
+
+model_name = "text_gen_model_{}.pt".format(int(time.time()))
+model_path = os.path.join("data", model_name)
+torch.save(my_net.state_dict(), model_path)
+
+
+model_symlink_path = os.path.join("data", "text_gen_model.pt")
+try:
+    os.remove(model_symlink_path)
+except:
+    pass
+os.symlink(model_name, model_symlink_path)
+
+writer.close()
 
 # References
 # - https://pytorch.org/tutorials/intermediate/char_rnn_generation_tutorial.html
-# - x
+# - https://github.com/lanpa/tensorboardX
+# - http://karpathy.github.io/2015/05/21/rnn-effectiveness/
+
