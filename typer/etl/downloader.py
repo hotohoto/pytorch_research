@@ -63,6 +63,25 @@ def maybe_extract_tar(source_tar_file_path):
     if destination_folder and not os.path.exists(destination_folder):
         os.makedirs(destination_folder)
     with tarfile.open(source_tar_file_path) as t:
-        t.extractall(destination_folder)
+        def is_within_directory(directory, target):
+            
+            abs_directory = os.path.abspath(directory)
+            abs_target = os.path.abspath(target)
+        
+            prefix = os.path.commonprefix([abs_directory, abs_target])
+            
+            return prefix == abs_directory
+        
+        def safe_extract(tar, path=".", members=None, *, numeric_owner=False):
+        
+            for member in tar.getmembers():
+                member_path = os.path.join(path, member.name)
+                if not is_within_directory(path, member_path):
+                    raise Exception("Attempted Path Traversal in Tar File")
+        
+            tar.extractall(path, members, numeric_owner=numeric_owner) 
+            
+        
+        safe_extract(t, destination_folder)
     reduce_folder_depth(destination_folder)
     return destination_folder
